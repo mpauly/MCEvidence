@@ -674,7 +674,7 @@ class MCEvidence(object):
                 
                 eigenVal,eigenVec = np.linalg.eig(ChainCov)
                 #check for negative eigenvalues
-                if (eigenVal>0).any():
+                if (eigenVal<0).any():
                     self.logger.warn("Some of the eigenvalues of the covariance matrix are negative and/or complex:")
                     for i,e in enumerate(eigenVal):
                         print("Eigenvalue Param_{} = {}".format(i,e))
