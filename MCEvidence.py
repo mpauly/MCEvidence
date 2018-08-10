@@ -1,8 +1,5 @@
 #!usr/bin/env python
 """
-Version : 0.1.1
-Date : 1st March 2017
-
 Authors : Yabebal Fantaye
 Email : yabi@aims.ac.za
 Affiliation : African Institute for Mathematical Sciences - South Africa
@@ -22,12 +19,11 @@ This code is tested in Python 2 version 2.7.12 and Python 3 version 3.5.2
 
 from __future__ import absolute_import
 from __future__ import print_function
-import subprocess
 import importlib
 import itertools
 from functools import reduce
 import io
-
+    
 import tempfile 
 import os
 import glob
@@ -67,11 +63,11 @@ logging.basicConfig(level=logging.DEBUG,format=FORMAT)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-
 __author__ = "Yabebal Fantaye"
 __email__ = "yabi@aims.ac.za"
 __license__ = "MIT"
-__version__ = "0.1"
+__version_info__ = ('17','04','2018')
+__version__ = '-'.join(__version_info__)
 __status__ = "Development"
 
 desc='Planck Chains MCEvidence. Returns the log Bayesian Evidence computed using the kth NN'
@@ -103,11 +99,17 @@ class data_set(object):
 
         
 class SamplesMIXIN(object):
-    '''The following routines must be defined to use this class:
+    '''
+    The following routines must be defined to use this class:
        __init__:  where certain variables are defined
        load_from_file: where data is read from file and 
                        returned as python dict
     '''
+    def __init__(self):
+        raise NotImplementedError()
+
+    def load_from_file(self):
+        raise NotImplementedError()
     
     def setup(self,str_or_dict,**kwargs):
         #Get the getdist MCSamples objects for the samples, specifying same parameter
@@ -120,28 +122,28 @@ class SamplesMIXIN(object):
         if self.debug:        
             self.logger.setLevel(logging.DEBUG)
             
-        #read MCMC samples from file or dict
+        #read MCMC samples from file
         if isinstance(str_or_dict,str):                
             fileroot=str_or_dict
             self.logger.info('Loading chain from '+fileroot)                
-            s1,s2 = self.load_from_file(fileroot,**kwargs)
-            self.data={'s1':data_set(s1),'s2':data_set(s2)}
+            s1,s2 = self.load_from_file(fileroot,**kwargs)            
             
-        # TODO: implement s1_s2 when dict is passed
-        #elif isinstance(str_or_dict,dict):                
-        #    d=str_or_dict
-        
+        #MCMC chains are passed as dict, list or tuple
+        elif isinstance(str_or_dict,(dict,list,tuple)):
+            if isinstance(str_or_dict,(list,tuple)):
+                self.chains=str_or_dict
+            else:
+                self.chains=str_or_dict.values()
+            s1,s2=self.chains2samples()
+            
+        #MCMC chains passed in unsupported format
         else:
-           self.logger.info('Passed first argument type is: %s'%type(str_or_dict))                
-           self.logger.error('first argument to samples2getdist should be a string or dict.')
-           raise
+            self.logger.info('Passed first argument type is: %s'%type(str_or_dict))                
+            self.logger.error('first argument to samples2getdist should be a file name string, list, tuple or dict.')
+            raise
 
-        #self.samples=s1_s2['s1']['samples']
-        #self.loglikes=s1_s2['s1']['loglikes']
-        #self.weights=s1_s2['s1']['weights']
-        
-        #if 'weights' in d.keys() else np.ones(len(self.loglikes))
-
+        #now data is 
+        self.data={'s1':data_set(s1),'s2':data_set(s2)}
 
         ndim=self.get_shape()[1]
 
@@ -157,7 +159,58 @@ class SamplesMIXIN(object):
             
         self.nparamMC=self.get_shape()[1]
 
-    
+
+    def chains2samples(self):
+        """
+        Combines separate chains into one samples array, so self.samples has all the samples
+        and this instance can then be used as a general :class:`~.chains.WeightedSamples` instance.
+
+        :return: self
+        """
+        if self.chains is None:
+            self.logger.error('The chains array is empty!')
+            raise
+        #
+        nchains=len(self.chains)
+        #
+        self.chain_offsets = np.cumsum(np.array([0] + [chain.shape[0] for chain in self.chains]))
+        if self.split:
+            if nchains>1:
+                text='''partition {} chains in two sets  
+                        chains 1:{} in one,  the {}th chain in the other'''
+                self.logger.info(text.format(nchains,nchains-1,nchains)) 
+                s1=np.concatenate(self.chains[0:-1])
+                s2=self.chains[-1]
+            else:
+                s=self.chains[0]
+                nrow=len(s)
+                rowid=range(nrow)
+                ix=np.random.choice(rowid,size=nrow/2,replace=False)
+                not_ix = np.setxor1d(rowid, ix) 
+                #now split
+                text='single chain with nrow={} split to ns1={}, ns2={}'
+                self.logger.info(text.format(nrow, len(ix),len(not_ix)))
+                s1=s[ix,:]
+                s2=s[not_ix,:]
+            #change to dict
+            s1_dict =  {'weights':s1[:,0],'loglikes':s1[:,1],'samples':s1[:,2:]}
+            s2_dict =  {'weights':s2[:,0],'loglikes':s2[:,1],'samples':s2[:,2:]}                        
+        else:
+            #no split, so just assign s1 and s2 to same array
+            s1=np.concatenate(self.chains)
+            s1_dict = {'weights':s1[:,0],'loglikes':s1[:,1],'samples':s1[:,2:]}
+            s2_dict = {'weights':None,'loglikes':None,'samples':None}
+            
+        #free array    
+        self.chains = None
+
+        # a copy of the weights that can be altered to
+        # independently to the original weights
+        s1_dict['aweights']=np.copy(s1_dict['weights'])
+        s2_dict['aweights']=np.copy(s2_dict['weights'])        
+       
+        return s1_dict,s2_dict
+        
     def get_shape(self,name='s1'):
         return self.data[name].samples.shape
 
@@ -355,79 +408,43 @@ class MCSamples(SamplesMIXIN):
             
         self.setup(str_or_dict,**kwargs)
 
-    def chains2samples(self):
-        """
-        Combines separate chains into one samples array, so self.samples has all the samples
-        and this instance can then be used as a general :class:`~.chains.WeightedSamples` instance.
 
-        :return: self
-        """
-        if self.chains is None:
-            self.logger.error('The chains array is empty!')
-            raise
-        #
-        nchains=len(self.chains)
-        #
-        self.chain_offsets = np.cumsum(np.array([0] + [chain.shape[0] for chain in self.chains]))
-        if self.split:
-            if nchains>1:
-                text='''partition {} chains in two sets  
-                        chains 1:{} in one,  the {}th chain in the other'''
-                self.logger.info(text.format(nchains,nchains-1,nchains)) 
-                s1=np.concatenate(self.chains[0:-1])
-                s2=self.chains[-1]
-            else:
-                s=self.chains[0]
-                nrow=len(s)
-                rowid=range(nrow)
-                ix=np.random.choice(rowid,size=nrow/2,replace=False)
-                not_ix = np.setxor1d(rowid, ix) 
-                #now split
-                text='single chain with nrow={} split to ns1={}, ns2={}'
-                self.logger.info(text.format(nrow, len(ix),len(not_ix)))
-                s1=s[ix,:]
-                s2=s[not_ix,:]
-            #change to dict
-            s1_dict =  {'weights':s1[:,0],'loglikes':s1[:,1],'samples':s1[:,2:]}
-            s2_dict =  {'weights':s2[:,0],'loglikes':s2[:,1],'samples':s2[:,2:]}                        
-        else:
-            #no split, so just assign s1 and s2 to same array
-            s1=np.concatenate(self.chains)
-            s1_dict = {'weights':s1[:,0],'loglikes':s1[:,1],'samples':s1[:,2:]}
-            s2_dict = {'weights':None,'loglikes':None,'samples':None}
-            
-        #free array    
-        self.chains = None
-
-        # a copy of the weights that can be altered to
-        # independently to the original weights
-        s1_dict['aweights']=np.copy(s1_dict['weights'])
-        s2_dict['aweights']=np.copy(s2_dict['weights'])        
-       
-        return s1_dict,s2_dict
-    
+    def read_list_to_array(self,flist):
+        chains=[]
+        for f in flist:
+            self.logger.info('loading: '+f)            
+            chains.append(np.loadtxt(f))
+        return chains
+        
     def load_from_file(self,fname,**kwargs):
         self.logger.debug('''Loading file assuming CosmoMC columns order: 
                            weight loglike param1 param2 ...''')
-        self.chains=[]
         
+        #fname can be (a list of) string filename, or filename with wildcard
+        #to handle those possibilities, we use try..except case
         try:
-            d=np.loadtxt(fname)
-            self.chains.append(d)            
-            self.logger.info(' loaded file: '+fname)
-        except:
-            idchain=kwargs.pop('idchain', 0)
-            if idchain>0:
-                f=fname+'_{}.txt'.format(idchain)
-                d=np.loadtxt(f)
-                self.chains.append(d)                
-                self.logger.info(' loaded file: '+f)                    
+            #make fname file name list if it is not already
+            if not isinstance(fname,(list,tuple)):
+                flist=[fname]
             else:
-                self.logger.info(' loading files: '+fname+'*.txt')                    
-                for f in glob.glob(fname+'*.txt'):
-                    self.logger.debug('loading: '+f)
-                    self.chains.append(np.loadtxt(f))
-
+                flist=fname
+            #load files
+            self.chains=self.read_list_to_array(flist)
+        except:
+            #get file names from matching pattern
+            if '*' in fname or '?' in fname:
+                flist=glob.glob(fname)
+            else:
+                idchain=kwargs.pop('idchain', 0)
+                if idchain>0:
+                    flist=[fname+'_{}.txt'.format(idchain)]
+                else:                    
+                    idpattern=kwargs.pop('idpattern', '_*.txt')
+                    self.logger.info(' loading files: '+fname+idpattern)                    
+                    flist=glob.glob(fname)                
+                
+            #load files
+            self.chains=self.read_list_to_array(flist)                
         return self.chains2samples()
             
            
@@ -447,7 +464,7 @@ class MCEvidence(object):
                       verbose=1,args={},
                       **gdkwargs):
         """Evidence estimation from MCMC chains
-        :param method: chain name (str) or array (np.ndarray) or python class
+        :param method: chain names (str or list of strings) or list/tuple/dict of arrays (np.ndarray) or python class
                 If string or numpy array, it is interpreted as MCMC chain. 
                 Otherwise, it is interpreted as a python class with at least 
                 a single method sampler and will be used to generate chain.
@@ -496,14 +513,18 @@ class MCEvidence(object):
         self.nbatch=nbatch
         self.brange=brange #todo: check for [N] 
         self.bscale=bscale if not isinstance(self.brange,int) else 'constant'
-        
+        #
+        self.snames=['s1']
+        if self.split:
+            self.snames.append('s2')
+        #
         # The arrays of powers and nchain record the number of samples 
         # that will be analysed at each iteration. 
         #idtrial is just an index
         self.idbatch=np.arange(self.nbatch,dtype=int)
-        self.powers  = np.zeros(self.nbatch)
-        self.bsize  = np.zeros(self.nbatch,dtype=int)
-        self.nchain  = np.zeros(self.nbatch,dtype=int)               
+        self.powers  = np.zeros((self.nbatch,len(self.snames)))
+        self.bsize  = np.zeros((self.nbatch,len(self.snames)),dtype=int)
+        self.nchain  = np.zeros((self.nbatch,len(self.snames)),dtype=int)               
         #
         self.kmax=max(2,kmax)
         self.priorvolume=priorvolume
@@ -516,9 +537,15 @@ class MCEvidence(object):
             
             if isinstance(method,str):
                 self.fname=method      
-                self.logger.debug('Using chains: %s'%method)
+                self.logger.debug('Using chain: %s'%method)
             else:
-                self.logger.debug('dictionary of samples and loglike array passed')
+                if not isinstance(method,dict):
+                    if isinstance(method[0],str):
+                        self.logger.debug('Using file name list: %s'%method)
+                    else:
+                        self.logger.debug('list/tuple of MCMC sample arrays')
+                else:
+                    self.logger.debug('dict of MCMC sample arrays')                    
                 
         else: #python class which includes a method called sampler
             
@@ -532,7 +559,8 @@ class MCEvidence(object):
                 XClass = getattr(sys.modules[__name__], method)
             else:
                 XClass=method
-            
+
+            # Output should be file name(s) or  list/tuple/dict of chains                
             if hasattr(XClass, '__class__'):
                 self.logger.debug('method is an instance of a class')
                 self.method=XClass
@@ -547,7 +575,6 @@ class MCEvidence(object):
                 except:
                     pass                        
                 # Now Generate samples.
-                # Output should be dict - {'chains':,'logprob':,'weight':} 
                 method=self.method.Sampler(nsamples=self.nsamples)                                 
                 
         #======== By this line we expect only chains either in file or dict ====
@@ -574,12 +601,12 @@ class MCEvidence(object):
         #
 
         #after burn-in and thinning
-        self.nsample = self.gd.get_shape()[0]            
+        self.nsample = [self.gd.get_shape(name=s)[0] for s in self.snames]
         if ndim is None: ndim=self.gd.nparamMC        
         self.ndim=ndim        
         #
         self.info['NparamsCosmo']=self.ndim
-        self.info['Nsamples']=self.nsample
+        self.info['Nsamples']=', '.join([str(x) for x in self.nsample])
         
         if self.debug:
             print('partition s1.shape',self.gd.get_shape(name='s1'))
@@ -623,25 +650,29 @@ class MCEvidence(object):
         if self.brange is None: 
             self.bsize=self.brange #check
             powmin,powmax=None,None
-            self.nchain[0]=self.nsample
-            self.powers[0]=np.log10(self.nsample)
+            for ix, nn in enumerate(self.nsample):
+                self.nchain[0,ix]=nn
+                self.powers[0,ix]=np.log10(nn)
         else:
             if bscale=='logpower':
                 powmin,powmax=self.get_batch_range()
-                self.powers=np.linspace(powmin,powmax,self.nbatch)
-                self.bsize = np.array([int(pow(10.0,x)) for x in self.powers])
+                for ix, nn in enumerate(self.nsample):                
+                    self.powers[:,ix]=np.linspace(powmin,powmax,self.nbatch)
+                    self.bsize[:,ix] = np.array([int(pow(10.0,x)) for x in self.powers])
                 self.nchain=self.bsize
 
             elif bscale=='linear':   
                 powmin,powmax=self.get_batch_range()
-                self.bsize=np.linspace(powmin,powmax,self.nbatch,dtype=np.int)
-                self.powers=np.array([int(log10(x)) for x in self.nchain])
+                for ix, nn in enumerate(self.nsample):                 
+                    self.bsize[:,ix]=np.linspace(powmin,powmax,self.nbatch,dtype=np.int)
+                    self.powers[:,ix]=np.array([int(log10(x)) for x in self.nchain])
                 self.nchain=self.bsize
 
             else: #constant
-                self.bsize=self.brange #check
-                self.powers=self.idbatch
-                self.nchain=np.array([x for x in self.bsize.cumsum()])
+                self.bsize[:,:]=self.brange #check
+                self.powers[:,:]=self.idbatch
+                for ix, nn in enumerate(self.nsample):                 
+                    self.nchain[:,ix]=np.array([x for x in self.bsize[:,ix].cumsum()])
             
     def get_samples(self,nsamples,istart=0,
                         rand=False,name='s1',
@@ -649,21 +680,22 @@ class MCEvidence(object):
         # If we are reading chain, it will be handled here 
         # istart -  will set row index to start getting the samples 
 
-        ntot=self.gd.get_shape()[0]
+        ntot=self.gd.get_shape(name)[0]
         
         if rand and not self.brange is None:
             if nsamples>ntot:
                 self.logger.error('partition %s nsamples=%s, ntotal_chian=%s'%(name,nsamples,ntot))
                 raise
             
-            idx=np.random.randint(0,high=ntot,size=nsamples)
+            idx=np.random.randint(0,high=ntot,size=nsamples) 
         else:
             idx=np.arange(istart,nsamples+istart)
 
         self.logger.debug('partition %s requested nsamples=%s, ntotal_chian=%s'%(name,nsamples,ntot))
         s,lnp,w=self.gd.arrays(name)
 
-        #trim 
+        #trim
+        #print('n,s.shape,idx.min,idx.max',nsamples,s.shape,idx.min(),idx.max())
         s,lnp,w = s[idx,0:self.ndim],lnp[idx],w[idx]
         
         if prewhiten:
@@ -788,7 +820,7 @@ class MCEvidence(object):
         # Loop over different numbers of MCMC samples (=S):
         itot=0
         for ipow,nsample in zip(self.idbatch,self.nchain):                
-            S=int(nsample)            
+            S=int(nsample[0])            
             DkNN    = np.zeros((S,kmax))
             indices = np.zeros((S,kmax))
             volume  = np.zeros((S,kmax))
@@ -813,7 +845,7 @@ class MCEvidence(object):
             # Use sklearn nearest neightbour routine, which chooses the 'best' algorithm.
             # This is where the hard work is done:
             if self.split:
-                samples2,logL2,weight2,Jacobian2=self.get_samples(S,istart=itot,
+                samples2,logL2,weight2,Jacobian2=self.get_samples(nsample[1],istart=itot,
                                                             rand=rand,
                                                             prewhiten=prewhiten,
                                                               name='s2')
@@ -894,6 +926,28 @@ class MCEvidence(object):
         
 #===============================================
 
+# The next two functions are directly taken from montepythons analyze.py
+def extract_array(line):
+    rhs = line.split('=')[-1].strip()
+    rhs = rhs.strip(']').lstrip('[')
+    sequence = [e.strip().strip('"').strip("'") for e in rhs.split(',')]
+    for index, elem in enumerate(sequence):
+        try:
+            sequence[index] = int(elem)
+        except ValueError:
+            try:
+                sequence[index] = float(elem)
+            except ValueError:
+                pass
+    return sequence
+
+
+def extract_dict(line):
+    sequence = extract_array(line)
+    lhs = line.split('=')[0].strip()
+    name = lhs.split('[')[-1].strip(']')
+    name = name.strip('"').strip("'")
+    return name, sequence
 
 def iscosmo_param(p,cosmo_params=None):
     '''
@@ -906,30 +960,67 @@ def iscosmo_param(p,cosmo_params=None):
                       'nrunrun','r','nt','ntrun','Aphiphi']        
     return p in cosmo_params
 
-def params_info(fname,cosmo=False):
+def params_info(fname,cosmo=False, volumes={}):
     '''
     Extract parameter names, ranges, and prior space volume
-    from CosmoMC *.ranges file
+    from CosmoMC *.ranges or montepython log.param file
     '''
-    logger.info('getting params info from %s.ranges'%fname)
-    par=np.genfromtxt(fname+'.ranges',dtype=None,names=('name','min','max'))#,unpack=True)
-    parName=par['name']
-    parMin=par['min']
-    parMax=par['max']
     
-    parMC={'name':[],'min':[],'max':[],'range':[]}
-    for p,pmin,pmax in zip(parName, parMin,parMax):
-        #if parameter info is to be computed only for cosmological parameters
-        pcond=iscosmo_param(p) if cosmo else True 
-        #now get info
-        if not np.isclose(pmax,pmin) and pcond:
-            parMC['name'].append(p)
-            parMC['min'].append(pmin)
-            parMC['max'].append(pmax)
-            parMC['range'].append(np.abs(pmax-pmin))
+    #CosmoMC
+    if glob.glob('{}*.ranges'.format(fname)):
+        logger.info('getting params info from COSMOMC file %s.ranges'%fname)
+        par=np.genfromtxt(fname+'.ranges',dtype=None,names=('name','min','max'))#,unpack=True)
+        parName=par['name']
+        parMin=par['min']
+        parMax=par['max']
+      
+        parMC={'name':[],'min':[],'max':[],'range':[]}
+        for p,pmin,pmax in zip(parName, parMin,parMax):
+          #if parameter info is to be computed only for cosmological parameters
+          pcond=iscosmo_param(p) if cosmo else True
+          #now get info
+          if not np.isclose(pmax,pmin) and pcond:
+              parMC['name'].append(p)
+              parMC['min'].append(pmin)
+              parMC['max'].append(pmax)
+              parMC['range'].append(np.abs(pmax-pmin))
+             
+    elif glob.glob('{}/log.param'.format(fname)):
+        logger.info('getting params info from montepython log.params file')
+        nr_of_cosmo_params = 0
+        with open('{}/log.param'.format(fname), 'r') as param:
+            parMC={'name':[],'min':[],'max':[],'range':[]}
+            for line in param:
+                if line.find('#') == -1:
+                    if line.find('data.parameters') != -1:
+                        name, array = extract_dict(line)
+                        pcond = array[5] == 'cosmo' if cosmo else True
+                    if pcond and not array[5] == 'derived':
+                        nr_of_cosmo_params += 1
+                        if array[1] == 'None' or array[2] == 'None':
+                            raise Exception('Unbounded priors are not supported - please specify priors')
+                        parMC['name'].append(name)
+                        parMC['min'].append(array[1])
+                        parMC['max'].append(array[2])
+                        parMC['range'].append(array[2] - array[1])
+                        if name in volumes:
+                            parMC['name'].append(name)
+                            parMC['range'].append(volumes[name])
+                        else:
+                            raise Exception('''Unbounded priors are not 
+                                   supported but prior for {} is not bound - 
+                                   please specify priors'''.format(name))
+                    else:
+                        parMC['name'].append(name)
+                        parMC['min'].append(array[1])
+                        parMC['max'].append(array[2])
+                        parMC['range'].append(array[2] - array[1])
+    else:
+        raise Exception('Could not read parameter volume from COSMOMC .ranges file or montepython log.param file')
     #
     parMC['str']=','.join(parMC['name'])
     parMC['ndim']=len(parMC['name'])
+    parMC['nr_of_params'] = nr_of_cosmo_params
     parMC['volume']=np.array(parMC['range']).prod()
     
     return parMC
@@ -938,7 +1029,7 @@ def params_info(fname,cosmo=False):
 
 if __name__ == '__main__':
 
-    print('---')
+    #print('---')
     #---------------------------------------
     #---- Extract command line arguments ---
     #---------------------------------------
@@ -948,7 +1039,10 @@ if __name__ == '__main__':
 
     # positional args
     parser.add_argument("root_name",help='Root filename for MCMC chains or python class filename')
-                        
+
+    vstring=">>>   %(prog)s :: {0} version date: {1}   <<<"
+    parser.add_argument('--version', action='version',
+                            version=vstring.format(__status__,__version__))    
     # optional args
     parser.add_argument("-k","--kmax",
                         dest="kmax",
@@ -1004,14 +1098,13 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     
     if verbose>1:
-        logger.setLevel(logging.DEBUG)
-        
+        logger.setLevel(logging.DEBUG)        
     try:
         parMC=params_info(method,cosmo=args.verbose)
         if verbose>1: print(parMC)
         prior_volume=parMC['volume']
-        logger.info('getting prior volume using cosmomc *.ranges output')
-        logger.info('prior_volume=%s'%prior_volume)
+        logger.info('getting prior volume using cosmomc *.ranges or montepython log.param outputs')
+        logger.info('prior_volume=%s'%prior_volume)        
     except:
         raise
         #print('setting prior_volume=1')
@@ -1025,3 +1118,4 @@ if __name__ == '__main__':
 
     print('* ln(B)[k] is the natural logarithm of the Baysian evidence estimated using the kth Nearest Neighbour.')
     print('')
+
