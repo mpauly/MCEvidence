@@ -991,30 +991,29 @@ def params_info(fname,cosmo=False, volumes={}):
         with open('{}/log.param'.format(fname), 'r') as param:
             parMC={'name':[],'min':[],'max':[],'range':[]}
             for line in param:
-                if line.find('#') == -1:
-                    if line.find('data.parameters') != -1:
-                        name, array = extract_dict(line)
-                        pcond = array[5] == 'cosmo' if cosmo else True
-                    if pcond and not array[5] == 'derived':
-                        nr_of_cosmo_params += 1
-                        if array[1] == 'None' or array[2] == 'None':
-                            raise Exception('Unbounded priors are not supported - please specify priors')
-                        parMC['name'].append(name)
-                        parMC['min'].append(array[1])
-                        parMC['max'].append(array[2])
-                        parMC['range'].append(array[2] - array[1])
-                        if name in volumes:
-                            parMC['name'].append(name)
-                            parMC['range'].append(volumes[name])
-                        else:
-                            raise Exception('''Unbounded priors are not 
-                                   supported but prior for {} is not bound - 
-                                   please specify priors'''.format(name))
-                    else:
-                        parMC['name'].append(name)
-                        parMC['min'].append(array[1])
-                        parMC['max'].append(array[2])
-                        parMC['range'].append(array[2] - array[1])
+                if line.find('#') > -1:
+		  continue
+                if line.find('data.parameters') == -1:
+		  continue
+		name, array = extract_dict(line)
+		if array[5] == 'derived':
+		  continue
+		pcond = array[5] == 'cosmo' if cosmo else True
+		if pcond:
+		    nr_of_cosmo_params += 1
+		    parMC['name'].append(name)
+		    parMC['min'].append(array[1])
+		    parMC['max'].append(array[2])
+
+		    if name in volumes:
+			parMC['name'].append(name)
+			parMC['range'].append(volumes[name])
+		    elif array[1] == 'None' or array[2] == 'None':
+			raise Exception('''Unbounded priors are not
+				supported but prior for {} is not bound -
+				please specify priors'''.format(name))
+		    else:
+			parMC['range'].append(array[2] - array[1])
     else:
         raise Exception('Could not read parameter volume from COSMOMC .ranges file or montepython log.param file')
     #
